@@ -44,7 +44,7 @@ def clean_missing_values(
     critical_cols: List[str],
     default_vals: Dict[str, Any]
 ) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Handle missing values by removing rows missing critical fields and filling others."""
+    """Handle missing values by removing rows missing critical fields and filling others"""
     stats = {
         "rows_with_missing_removed": 0,
         "missing_values_filled": 0
@@ -94,7 +94,7 @@ def validate_data(
     df: pd.DataFrame,
     valid_ranges: Dict[str, Tuple[float, float]]
 ) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Correct values outside specified numeric ranges by replacing them with the median."""
+    """Correct values outside specified numeric ranges by replacing them with the median"""
     stats = {"invalid_values_corrected": 0}
 
     for col, (min_val, max_val) in valid_ranges.items():
@@ -123,7 +123,7 @@ def clean_raw_data(df: pd.DataFrame) -> pd.DataFrame:
     original_count = len(df)
     removed_count = 0
     
-    # Check for text values in columns that should be numeric
+    # Check for text values in columns  should be numeric
     for col in SELECTED_COLUMNS:
         if col in df.columns:
             # Try to convert to numeric, marking text values as NaN
@@ -131,18 +131,18 @@ def clean_raw_data(df: pd.DataFrame) -> pd.DataFrame:
             text_values = numeric_values.isna() & df[col].notna()
             
             if text_values.any():
-                # Log the rows that will be removed
+                # Log rows will be removed
                 print(f"Removing {text_values.sum()} rows with text values in column '{col}'")
                 example_values = df.loc[text_values, col].head(3).tolist()
                 print(f"  Example values: {example_values}")
                 
-                # Remove these rows
+                # Remove rows
                 df = df[~text_values]
                 removed_count += text_values.sum()
     
     # Handle extremely large values in numeric columns (like 8223.0, 16781.0)
     for col in df.select_dtypes(include=['number']).columns:
-        # Skip first column (ID) and some columns where large values might be legitimate
+        # Skip column ID and columns where large values might be legitimate
         if col != df.columns[0] and col not in ['id', 'ccf']:
             # Calculate threshold as 99th percentile times 1.5
             valid_values = df[col].dropna()
@@ -200,15 +200,15 @@ def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any
 def transform_heart_disease_data(
     input_directory: str = 'app/data/raw/to_csv',
     output_directory: str = 'app/data/processed'
-) -> Dict[str, Any]:
-    """Process all raw CSV files in the input directory and save cleaned versions"""
+) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    # Create output directory
     output_path = Path(output_directory)
     output_path.mkdir(parents=True, exist_ok=True)
 
     input_path = Path(input_directory)
     csv_files = list(input_path.glob('*.csv'))
     if not csv_files:
-        return {"error": "No files found"}
+        return {}, {"error": "No files found"}
 
     total_stats = {
         "processed_files": 0,
@@ -219,101 +219,42 @@ def transform_heart_disease_data(
         "missing_values_filled": 0,
         "invalid_values_corrected": 0
     }
+    
+    # Dictionary to store transformed DataFrames
+    transformed_dataframes = {}
 
     for file_path in csv_files:
         file_name = file_path.name
         try:
+            print(f"Processing {file_name}...")
             df = pd.read_csv(file_path)
+            print(f"Read {len(df)} rows from {file_name}")
+            
+            # Clean raw data first to remove corrupted rows
             df = clean_raw_data(df)
+            print(f"After cleaning: {len(df)} rows remaining")
+            
+            # Apply transformation steps
             transformed_df, file_stats = transform_single_file(df)
 
+            # Update statistics
             for key in total_stats:
                 if key in file_stats:
                     total_stats[key] += file_stats[key]
             total_stats["processed_files"] += 1
-
-            output_file = output_path / f"processed_{file_name}"
-            transformed_df.to_csv(output_file, index=False)
+            
+            # Store transformed DataFrame with its output filename
+            output_filename = f"processed_{file_name}"
+            transformed_dataframes[output_filename] = transformed_df
+            print(f"Transformed {file_name} - now has {len(transformed_df)} rows")
 
         except Exception as e:
             print(f"Error processing file {file_name}: {e}")
             continue
 
-    return total_stats
-
-
-def merge_processed_files(
-    processed_directory: str = 'app/data/processed',
-    output_file: str = 'app/data/processed/heart_disease_merged.csv'
-) -> Dict[str, Any]:
-    """Merge all processed CSV files into a single file and generate summary statistics."""
-    # Create the output directory if it doesn't exist
-    output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Add source info to the statistics
+    total_stats["input_directory"] = str(input_directory)
+    total_stats["output_directory"] = str(output_directory)
+    total_stats["processed_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Find all processed CSV files
-    input_path = Path(processed_directory)
-    processed_files = list(input_path.glob('processed_*.csv'))
-    
-    if not processed_files:
-        return {"error": "No processed CSV files found"}
-    
-    stats = {
-        "files_merged": 0,
-        "total_rows": 0,
-        "rows_after_dedup": 0,
-        "duplicates_removed": 0
-    }
-    
-    all_dfs = []
-    
-    # Read processed file
-    for file_path in processed_files:
-        try:
-            df = pd.read_csv(file_path)
-            df['source'] = file_path.name.replace('processed_', '')
-            
-            stats["files_merged"] += 1
-            stats["total_rows"] += len(df)
-            all_dfs.append(df)
-            print(f"Read {len(df)} rows from {file_path.name}")
-            
-        except Exception as e:
-            print(f"Error reading {file_path.name}: {e}")
-            continue
-    
-    if not all_dfs:
-        return {"error": "None of the files could be read"}
-    
-    # Concatenate all DataFrames
-    merged_df = pd.concat(all_dfs, ignore_index=True)
-    
-    # Remove duplicates
-    before_dedup = len(merged_df)
-    merged_df = merged_df.drop_duplicates()
-    duplicates_removed = before_dedup - len(merged_df)
-    
-    stats["rows_after_dedup"] = len(merged_df)
-    stats["duplicates_removed"] = duplicates_removed
-    
-    # Save the merged file
-    merged_df.to_csv(output_file, index=False)
-    print(f"Saved merged file with {len(merged_df)} rows to {output_file}")
-    
-    # Create a summary statistics file
-    summary_file = str(output_file).replace('.csv', '_summary.csv')
-    
-    # Compute statistics for numeric columns
-    numeric_cols = merged_df.select_dtypes(include=['number']).columns
-    stats_df = pd.DataFrame({
-        'column': list(numeric_cols),
-        'mean': [merged_df[col].mean() for col in numeric_cols],
-        'median': [merged_df[col].median() for col in numeric_cols],
-        'min': [merged_df[col].min() for col in numeric_cols],
-        'max': [merged_df[col].max() for col in numeric_cols]
-    })
-    
-    stats_df.to_csv(summary_file, index=False)
-    print(f"Saved data statistics to {summary_file}")
-    
-    return stats
+    return transformed_dataframes, total_stats
