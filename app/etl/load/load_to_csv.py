@@ -4,22 +4,14 @@ import os
 import sys
 from typing import Dict, Any
 
-# Add project root to Python path
-project_root = Path(__file__).parents[3]  # Go up 3 levels from this file
+project_root = Path(__file__).parents[3]  
 sys.path.insert(0, str(project_root))
 
 # Now the app module can be found
 from app.etl.transform.transform import transform_heart_disease_data
 
 def load_to_csv(transformed_data, output_directory='app/data/processed'):
-    """
-    Save transformed DataFrames to CSV files and merge regional datasets.
-    
-    This function:
-    1. Saves each transformed DataFrame to a CSV file
-    2. Identifies the 3 regional datasets
-    3. Merges them into a single heart_disease_data.csv file
-    """
+    """Save transformed DataFrames to CSV files and merge regional datasets"""
     # Create output directory if it doesn't exist
     output_path = Path(output_directory)
     output_path.mkdir(parents=True, exist_ok=True)

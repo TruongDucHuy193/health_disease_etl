@@ -1,7 +1,12 @@
+from matplotlib.rcsetup import validate_any
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
+import warnings
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings('ignore')
 
 # Configuration parameters
 SELECTED_COLUMNS = [
@@ -11,250 +16,279 @@ SELECTED_COLUMNS = [
     'htn', 'dm', 'famhist', 'exang', 'xhypo', 'lmt', 'ladprox', 'laddist',
     'diag', 'cxmain', 'ramus', 'om1', 'om2', 'rcaprox', 'rcadist'
 ]
-CRITICAL_COLUMNS = ['age', 'sex', 'cp']
-DEFAULT_VALUES = {
-    'slope': 0, 'ca': 0, 'thal': 3, 'restef': 0, 'restwm': 0,
-    'exeref': 0, 'exerwm': 0, 'dm': 0, 'famhist': 0, 'lmt': 0,
-    'ladprox': 0, 'laddist': 0, 'diag': 0, 'cxmain': 0, 'ramus': 0,
-    'om1': 0, 'om2': 0, 'rcaprox': 0, 'rcadist': 0
-}
-VALID_RANGES = {
-    'age': (0, 120),
-    'trestbps': (50, 250),
-    'chol': (100, 600),
-    'thalach': (50, 250),
-    'oldpeak': (0, 10)
-}
 
+# Only truly critical columns that are essential for analysis
+TRULY_CRITICAL_COLUMNS = ['age', 'sex'] 
+
+# Medical knowledge-based defaults
+MEDICAL_DEFAULTS = {
+    'trestbps': 120, 'chol': 200, 'thalach': 150, 'fbs': 0, 'restecg': 0,
+    'exang': 0, 'oldpeak': 0, 'slope': 1, 'ca': 0, 'thal': 3, 'smoke': 0,
+    'cigs': 0, 'htn': 0, 'dm': 0, 'famhist': 0, 'dig': 0, 'prop': 0,
+    'nitr': 0, 'pro': 0, 'diuretic': 0, 'restef': 55, 'restwm': 1,
+    'exeref': 55, 'exerwm': 1, 'xhypo': 0,
+}
 
 def standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
-    #Convert all column names to lowercase
+    """Convert all column names to lowercase"""
     df.columns = [col.lower() for col in df.columns]
     return df
 
-
 def select_columns(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
-    """Keep only the specified columns if they exist in the DataFrame."""
+    """Keep only the specified columns if they exist in the DataFrame"""
     existing_columns = [col for col in columns if col in df.columns]
     return df[existing_columns]
 
+def clean_missing_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean missing value indicators"""
+    missing_indicators = [
+        '-9', -9, 'NULL', 'null', 'NA', 'N/A', '', ' ', '?', 'nan', 'NaN', 
+        'none', 'None', 'NAN', 'Null', 'missing', 'Missing', 'MISSING',
+        '.', '..', '...', 'undefined', 'Undefined', '#N/A', '#NULL!', '#DIV/0!'
+    ]
+    
+    df_clean = df.copy()
+    for col in df_clean.columns:
+        df_clean[col] = df_clean[col].replace(missing_indicators, np.nan)
+        # Handle special cases for specific columns
+        if col in ['ca', 'thal', 'slope'] and pd.api.types.is_numeric_dtype(df_clean[col]):
+            df_clean[col] = df_clean[col].replace([0, -9], np.nan)
+    
+    return df_clean
 
-def clean_missing_values(
-    df: pd.DataFrame,
-    critical_cols: List[str],
-    default_vals: Dict[str, Any]
-) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Handle missing values by removing rows missing critical fields and filling others"""
-    stats = {
-        "rows_with_missing_removed": 0,
-        "missing_values_filled": 0
-    }
-
-    # Replace common placeholders with NaN
-    df = df.replace(['-9', -9, 'NULL', 'null', 'NA', 'N/A', ''], np.nan)
-
-    # Drop rows missing any critical value
-    critical_cols_exist = [col for col in critical_cols if col in df.columns]
+def handle_missing_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Handle missing data with medical knowledge and simple imputation"""
+    
+    stats = {"rows_removed": 0, "values_imputed": 0}
+    
+    print("🧠 Processing missing data...")
+    
+    # Clean missing indicators
+    df_clean = clean_missing_values(df)
+    
+    # Remove completely empty rows
+    before_empty = len(df_clean)
+    df_clean = df_clean.dropna(how='all')
+    empty_removed = before_empty - len(df_clean)
+    
+    # Remove rows missing ALL critical columns
+    critical_cols_exist = [col for col in TRULY_CRITICAL_COLUMNS if col in df_clean.columns]
     if critical_cols_exist:
-        missing_critical = df[critical_cols_exist].isna().any(axis=1)
-        if missing_critical.any():
-            before_rows = len(df)
-            df = df[~missing_critical]
-            stats["rows_with_missing_removed"] += before_rows - len(df)
-
-    # Drop entirely empty rows
-    empty_rows = df.isna().all(axis=1)
-    if empty_rows.any():
-        before_rows = len(df)
-        df = df[~empty_rows]
-        stats["rows_with_missing_removed"] += before_rows - len(df)
-
-    missing_before = df.isna().sum().sum()
-
-    for col in df.columns:
-        if df[col].isna().any():
-            if col in default_vals:
-                df[col] = df[col].fillna(default_vals[col])
-            elif pd.api.types.is_numeric_dtype(df[col]):
-                median_value = df[col].median()
-                if pd.notna(median_value):
-                    df[col] = df[col].fillna(median_value)
+        critical_all_missing = df_clean[critical_cols_exist].isnull().all(axis=1)
+        before_critical = len(df_clean)
+        df_clean = df_clean[~critical_all_missing]
+        critical_removed = before_critical - len(df_clean)
+    else:
+        critical_removed = 0
+    
+    stats["rows_removed"] = empty_removed + critical_removed
+    
+    if stats["rows_removed"] > 0:
+        print(f"   🗑️  Removed {stats['rows_removed']} unusable rows")
+    
+    # Impute missing values
+    for col in df_clean.columns:
+        if df_clean[col].isnull().any():
+            missing_count = df_clean[col].isnull().sum()
+            
+            # Use medical default if available
+            if col in MEDICAL_DEFAULTS:
+                df_clean[col] = df_clean[col].fillna(MEDICAL_DEFAULTS[col])
+                print(f"   🏥 {col}: filled {missing_count} values with medical default")
+            # Use median for numeric columns
+            elif pd.api.types.is_numeric_dtype(df_clean[col]):
+                median_val = df_clean[col].median()
+                if pd.isna(median_val):
+                    median_val = 0
+                df_clean[col] = df_clean[col].fillna(median_val)
+                print(f"   📊 {col}: filled {missing_count} values with median")
+            # Use mode for categorical columns
             else:
-                if not df[col].mode().empty:
-                    mode_value = df[col].mode()[0]
-                    df[col] = df[col].fillna(mode_value)
+                mode_val = df_clean[col].mode()
+                fill_val = mode_val.iloc[0] if len(mode_val) > 0 else 'Unknown'
+                df_clean[col] = df_clean[col].fillna(fill_val)
+                print(f"   📝 {col}: filled {missing_count} values with mode")
+            
+            stats["values_imputed"] += missing_count
+    
+    # Optimize data types
+    type_conversions = {
+        'sex': 'int8', 'cp': 'int8', 'fbs': 'int8', 'restecg': 'int8',
+        'exang': 'int8', 'slope': 'int8', 'ca': 'int8', 'thal': 'int8',
+        'smoke': 'int8', 'htn': 'int8', 'dm': 'int8', 'famhist': 'int8',
+        'dig': 'int8', 'prop': 'int8', 'nitr': 'int8', 'pro': 'int8',
+        'diuretic': 'int8', 'xhypo': 'int8'
+    }
+    
+    for col, dtype in type_conversions.items():
+        if col in df_clean.columns:
+            try:
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0).astype(dtype)
+            except:
+                pass
+    
+    print(f"   ✅ Missing data processed: {stats['values_imputed']} values imputed")
+    return df_clean, stats
 
-    missing_after = df.isna().sum().sum()
-    stats["missing_values_filled"] = missing_before - missing_after
-
-    return df, stats
-
-
-def validate_data(
-    df: pd.DataFrame,
-    valid_ranges: Dict[str, Tuple[float, float]]
-) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Correct values outside specified numeric ranges by replacing them with the median"""
+def validate_and_clean_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """Validate data ranges and fix obvious errors"""
+    
     stats = {"invalid_values_corrected": 0}
-
+    
+    # Define reasonable ranges for key medical variables
+    valid_ranges = {
+        'age': (0, 120),
+        'trestbps': (50, 300),
+        'chol': (50, 800),
+        'thalach': (40, 300),
+        'oldpeak': (0, 15)
+    }
+    
+    print("🔍 Validating data ranges...")
+    
     for col, (min_val, max_val) in valid_ranges.items():
         if col in df.columns:
             invalid_mask = (df[col] < min_val) | (df[col] > max_val)
             invalid_count = invalid_mask.sum()
-
+            
             if invalid_count > 0:
-                valid_median = df.loc[~invalid_mask, col].median()
-                df.loc[invalid_mask, col] = valid_median
+                if col in MEDICAL_DEFAULTS:
+                    df.loc[invalid_mask, col] = MEDICAL_DEFAULTS[col]
+                else:
+                    df.loc[invalid_mask, col] = df[col].median()
+                
                 stats["invalid_values_corrected"] += invalid_count
-
+                print(f"   🔧 {col}: fixed {invalid_count} invalid values")
+    
     return df, stats
 
-
 def remove_duplicates(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Drop duplicate rows"""
-    before_dedup = len(df)
-    df = df.drop_duplicates()
-    return df, {"duplicates_removed": before_dedup - len(df)}
-
-def clean_raw_data(df: pd.DataFrame) -> pd.DataFrame:
-    '''Clean the raw DataFrame by removing rows with text values in numeric columns,
-    handling extreme values, and removing rows with unrealistic ages'''
-    # Original row count for logging
-    original_count = len(df)
-    removed_count = 0
+    """Remove duplicate rows"""
+    before_count = len(df)
+    df_dedup = df.drop_duplicates()
+    total_removed = before_count - len(df_dedup)
     
-    # Check for text values in columns  should be numeric
-    for col in SELECTED_COLUMNS:
-        if col in df.columns:
-            # Try to convert to numeric, marking text values as NaN
-            numeric_values = pd.to_numeric(df[col], errors='coerce')
-            text_values = numeric_values.isna() & df[col].notna()
-            
-            if text_values.any():
-                # Log rows will be removed
-                print(f"Removing {text_values.sum()} rows with text values in column '{col}'")
-                example_values = df.loc[text_values, col].head(3).tolist()
-                print(f"  Example values: {example_values}")
-                
-                # Remove rows
-                df = df[~text_values]
-                removed_count += text_values.sum()
+    if total_removed > 0:
+        print(f"   🗑️  Removed {total_removed} duplicate rows")
     
-    # Handle extremely large values in numeric columns (like 8223.0, 16781.0)
-    for col in df.select_dtypes(include=['number']).columns:
-        # Skip column ID and columns where large values might be legitimate
-        if col != df.columns[0] and col not in ['id', 'ccf']:
-            # Calculate threshold as 99th percentile times 1.5
-            valid_values = df[col].dropna()
-            if not valid_values.empty:
-                percentile_99 = np.percentile(valid_values, 99)
-                threshold = percentile_99 * 1.5
-                if threshold > 0:
-                    extreme_values = df[col] > threshold
-                    if extreme_values.any():
-                        print(f"Removed {extreme_values.sum()} rows with extreme values in {col} (>{threshold:.1f})")
-                        df = df[~extreme_values]
-                        removed_count += extreme_values.sum()
-    
-    # Drop rows with age out of realistic range (0-120)
-    if 'age' in df.columns:
-        invalid_age = (df['age'] < 0) | (df['age'] > 120)
-        if invalid_age.any():
-            df = df[~invalid_age]
-            removed_count += invalid_age.sum()
-            print(f"Removed {invalid_age.sum()} rows with invalid age values")
-    
-    print(f"Total: Removed {removed_count} corrupted rows out of {original_count}")
-    return df
-
+    return df_dedup, {"duplicates_removed": total_removed}
 
 def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Apply all cleaning and transformation steps to a single DataFrame."""
+    """Transform a single file through the complete pipeline"""
+    
     rows_before = len(df)
+    print(f"🚀 Transforming {rows_before} rows...")
+    
     stats = {
         "rows_before": rows_before,
         "rows_after": 0,
-        "rows_with_missing_removed": 0,
+        "data_retention_rate": 0,
+        "rows_removed": 0,
         "duplicates_removed": 0,
-        "missing_values_filled": 0,
+        "values_imputed": 0,
         "invalid_values_corrected": 0
     }
 
+    # Step 1: Basic preprocessing
     df = standardize_column_names(df)
     df = select_columns(df, SELECTED_COLUMNS)
+    print(f"   📋 Selected {len(df.columns)} relevant columns")
 
-    df, missing_stats = clean_missing_values(df, CRITICAL_COLUMNS, DEFAULT_VALUES)
-    stats["rows_with_missing_removed"] += missing_stats["rows_with_missing_removed"]
-    stats["missing_values_filled"] += missing_stats["missing_values_filled"]
+    # Step 2: Handle missing data
+    df, imputation_stats = handle_missing_data(df)
+    stats["rows_removed"] += imputation_stats["rows_removed"]
+    stats["values_imputed"] += imputation_stats["values_imputed"]
 
-    df, validation_stats = validate_data(df, VALID_RANGES)
+    # Step 3: Validate and clean data
+    df, validation_stats = validate_and_clean_data(df)
     stats["invalid_values_corrected"] += validation_stats["invalid_values_corrected"]
 
+    # Step 4: Remove duplicates
     df, duplicate_stats = remove_duplicates(df)
     stats["duplicates_removed"] += duplicate_stats["duplicates_removed"]
 
+    # Final statistics
     stats["rows_after"] = len(df)
-    return df, stats
+    stats["data_retention_rate"] = (len(df) / rows_before) * 100
 
+    print(f"   ✅ Transformation completed: {stats['data_retention_rate']:.1f}% retention")
+    
+    return df, stats
 
 def transform_heart_disease_data(
     input_directory: str = 'app/data/raw/to_csv',
     output_directory: str = 'app/data/processed'
 ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
+    """Main transformation function for heart disease data"""
+    
+    print("🏥 HEART DISEASE ETL - DATA TRANSFORMATION")
+    print("=" * 60)
+    
     # Create output directory
     output_path = Path(output_directory)
     output_path.mkdir(parents=True, exist_ok=True)
 
     input_path = Path(input_directory)
     csv_files = list(input_path.glob('*.csv'))
+    
     if not csv_files:
-        return {}, {"error": "No files found"}
+        print(f"❌ No CSV files found in {input_directory}")
+        return {}, {"error": "No CSV files found in input directory"}
 
     total_stats = {
         "processed_files": 0,
-        "rows_before": 0,
-        "rows_after": 0,
-        "rows_with_missing_removed": 0,
-        "duplicates_removed": 0,
-        "missing_values_filled": 0,
-        "invalid_values_corrected": 0
+        "total_rows_before": 0,
+        "total_rows_after": 0,
+        "overall_retention_rate": 0,
+        "total_values_imputed": 0,
+        "total_duplicates_removed": 0,
+        "total_invalid_corrected": 0
     }
     
-    # Dictionary to store transformed DataFrames
     transformed_dataframes = {}
 
     for file_path in csv_files:
         file_name = file_path.name
+        print(f"\n📁 Processing {file_name}...")
+        
         try:
-            print(f"Processing {file_name}...")
+            # Load data
             df = pd.read_csv(file_path)
-            print(f"Read {len(df)} rows from {file_name}")
             
-            # Clean raw data first to remove corrupted rows
-            df = clean_raw_data(df)
-            print(f"After cleaning: {len(df)} rows remaining")
-            
-            # Apply transformation steps
+            # Apply transformation
             transformed_df, file_stats = transform_single_file(df)
-
-            # Update statistics
-            for key in total_stats:
-                if key in file_stats:
-                    total_stats[key] += file_stats[key]
-            total_stats["processed_files"] += 1
             
-            # Store transformed DataFrame with its output filename
+            # Store results
             output_filename = f"processed_{file_name}"
             transformed_dataframes[output_filename] = transformed_df
-            print(f"Transformed {file_name} - now has {len(transformed_df)} rows")
-
+            
+            # Update total statistics
+            total_stats["processed_files"] += 1
+            total_stats["total_rows_before"] += file_stats["rows_before"]
+            total_stats["total_rows_after"] += file_stats["rows_after"]
+            total_stats["total_values_imputed"] += file_stats["values_imputed"]
+            total_stats["total_duplicates_removed"] += file_stats["duplicates_removed"]
+            total_stats["total_invalid_corrected"] += file_stats["invalid_values_corrected"]
+            
+            print(f"   ✅ {file_name} processed successfully")
+            
         except Exception as e:
-            print(f"Error processing file {file_name}: {e}")
+            print(f"   ❌ Error processing {file_name}: {e}")
             continue
 
-    # Add source info to the statistics
-    total_stats["input_directory"] = str(input_directory)
-    total_stats["output_directory"] = str(output_directory)
-    total_stats["processed_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Calculate overall statistics
+    if total_stats["total_rows_before"] > 0:
+        total_stats["overall_retention_rate"] = (
+            total_stats["total_rows_after"] / total_stats["total_rows_before"]
+        ) * 100
+    
+    # Summary
+    print(f"\n🎉 TRANSFORMATION SUMMARY")
+    print(f"=" * 40)
+    print(f"📁 Files processed: {total_stats['processed_files']}")
+    print(f"📊 Overall data retention: {total_stats['overall_retention_rate']:.1f}%")
+    print(f"📈 Total rows: {total_stats['total_rows_before']} → {total_stats['total_rows_after']}")
+    print(f"🔧 Total values imputed: {total_stats['total_values_imputed']}")
+    print(f"🗑️  Total duplicates removed: {total_stats['total_duplicates_removed']}")
     
     return transformed_dataframes, total_stats
