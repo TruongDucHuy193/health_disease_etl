@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 
 # Configuration parameters for MI risk prediction
 SELECTED_COLUMNS = [
-    'age', 'sex', 'num', 'cp', 'ca', 'thal', 'oldpeak', 'exang', 
+    'age', 'sex', 'num', 'cp', 'thal', 'ca', 'oldpeak', 'exang', 
     'trestbps', 'chol', 'thalach', 'slope', 'restecg', 'htn', 'dm', 
-    'famhist', 'fbs', 'smoke', 'prop', 'nitr', 'pro', 
+    'famhist', 'fbs', 'prop', 'nitr', 'pro', 
     'diuretic', 'xhypo'
 ]
 # Critical columns for MI risk prediction (age, sex, num as target)
@@ -34,18 +34,23 @@ def clean_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         '-9', -9, 'NULL', 'null', 'NA', 'N/A', '', ' ', '?', 'nan', 'NaN', 
         'none', 'None', 'NAN', 'Null', 'missing', 'Missing', 'MISSING',
         '.', '..', '...', 'undefined', 'Undefined', '#N/A', '#NULL!', '#DIV/0!'
-    ]
-    
+    ]    
     df_clean = df.copy()
     for col in df_clean.columns:
         df_clean[col] = df_clean[col].replace(missing_indicators, np.nan)
-        
         # Handle special cases for specific columns
         if col == 'thal' and pd.api.types.is_numeric_dtype(df_clean[col]):
             # For thal: valid values are 3, 6, 7. Replace invalid values with NaN
             df_clean[col] = df_clean[col].replace([0, 1, 2, 4, 5, -9], np.nan)
-        elif col in ['ca', 'slope'] and pd.api.types.is_numeric_dtype(df_clean[col]):
+        elif col == 'slope' and pd.api.types.is_numeric_dtype(df_clean[col]):
+            # For slope: 0 is not valid, replace with NaN
             df_clean[col] = df_clean[col].replace([0, -9], np.nan)
+        elif col == 'ca' and pd.api.types.is_numeric_dtype(df_clean[col]):
+            # For ca: valid values are 0, 1, 2, 3. Replace invalid values with NaN
+            df_clean[col] = df_clean[col].replace([-9], np.nan)
+            # Also handle values > 3 as invalid
+            invalid_ca_mask = df_clean[col] > 3
+            df_clean.loc[invalid_ca_mask, col] = np.nan
     
     return df_clean
 
@@ -89,19 +94,54 @@ def handle_missing_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]
     if columns_to_drop:
         df_clean = df_clean.drop(columns=columns_to_drop)
         stats["columns_dropped"] = len(columns_to_drop)
-        print(f"   ✅ Removed {len(columns_to_drop)} columns with all missing values: {columns_to_drop}")
-      # Second pass: impute remaining missing values
+        print(f"   ✅ Removed {len(columns_to_drop)} columns with all missing values: {columns_to_drop}")      # Second pass: impute remaining missing values
     for col in df_clean.columns:
         if df_clean[col].isnull().any():
             missing_count = df_clean[col].isnull().sum()
+            missing_rate = missing_count / len(df_clean)
+              # Special handling for diabetes mellitus (dm) with high missing rate
+            if col == 'dm' and missing_rate > 0.8:
+                # Conservative medical approach: assume no diabetes if not documented
+                fill_val = 0  # No diabetes history
+                print(f"   🏥 {col}: {missing_count} values ({missing_rate*100:.1f}% missing)")
+                print(f"   🔬 Applied conservative medical assumption: no diabetes history (0)")
+                df_clean[col] = df_clean[col].fillna(fill_val)
+                stats["values_imputed"] += missing_count
+                continue
+            
+            # Special handling for ca (number of major vessels)
+            elif col == 'ca':
+                # For ca: use median but with medical consideration
+                # 0 vessels affected is the most common/healthy state
+                median_val = df_clean[col].median()
+                if pd.isna(median_val):
+                    fill_val = 0  # Default to 0 vessels (healthiest state)
+                    print(f"   🏥 {col}: filled {missing_count} values with clinical default (0 vessels)")
+                else:
+                    fill_val = median_val
+                    print(f"   🩺 {col}: filled {missing_count} values with median ({fill_val:.0f} vessels)")
+                df_clean[col] = df_clean[col].fillna(fill_val)
+                stats["values_imputed"] += missing_count
+                continue
             
             # Use median for numeric columns (PRIORITY 1)
             if pd.api.types.is_numeric_dtype(df_clean[col]):
                 median_val = df_clean[col].median()
                 if pd.isna(median_val):
-                    # If median is NaN (all values missing), use 0 as fallback
-                    fill_val = 0
-                    print(f"   ⚠️  {col}: filled {missing_count} values with 0 (no valid data for median)")
+                    # If median is NaN (all values missing), use reasonable defaults
+                    if col in ['age', 'trestbps', 'chol', 'thalach']:
+                        # Use clinical defaults for important continuous variables
+                        clinical_defaults = {
+                            'age': 55,         # Typical MI patient age
+                            'trestbps': 130,   # Normal-high BP
+                            'chol': 200,       # Borderline cholesterol
+                            'thalach': 150     # Age-adjusted max HR
+                        }
+                        fill_val = clinical_defaults.get(col, 0)
+                        print(f"   🏥 {col}: filled {missing_count} values with clinical default ({fill_val})")
+                    else:
+                        fill_val = 0
+                        print(f"   ⚠️  {col}: filled {missing_count} values with 0 (no valid data for median)")
                 else:
                     fill_val = median_val
                     print(f"   📊 {col}: filled {missing_count} values with median ({fill_val:.1f})")
@@ -119,13 +159,11 @@ def handle_missing_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]
                     print(f"   ⚠️  {col}: filled {missing_count} values with 'Unknown' (no valid data for mode)")
                 df_clean[col] = df_clean[col].fillna(fill_val)
             
-            stats["values_imputed"] += missing_count
-    
-    # Optimize data types
+            stats["values_imputed"] += missing_count    # Optimize data types
     type_conversions = {
         'sex': 'int8', 'cp': 'int8', 'fbs': 'int8', 'restecg': 'int8',
-        'exang': 'int8', 'slope': 'int8', 'ca': 'int8', 'thal': 'int8',
-        'smoke': 'int8', 'htn': 'int8', 'dm': 'int8', 'famhist': 'int8',
+        'exang': 'int8', 'slope': 'int8', 'thal': 'int8', 'ca': 'int8',
+        'htn': 'int8', 'dm': 'int8', 'famhist': 'int8',
         'dig': 'int8', 'prop': 'int8', 'nitr': 'int8', 'pro': 'int8',
         'diuretic': 'int8', 'xhypo': 'int8'
     }
@@ -143,22 +181,17 @@ def handle_missing_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]
 def validate_and_clean_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
     """Validate data ranges and fix obvious errors for MI risk prediction"""
     
-    stats = {"invalid_values_corrected": 0}
-    
-    # Define optimized ranges for MI risk prediction
+    stats = {"invalid_values_corrected": 0}    # Define optimized ranges for MI risk prediction
     valid_ranges = {
         'age': (18, 100),           # Adult patients only
         'trestbps': (70, 250),      # Systolic BP range
         'chol': (100, 600),         # Total cholesterol
         'thalach': (60, 220),       # Max heart rate (age-adjusted upper)
         'oldpeak': (0, 10),         # ST depression
-        'ca': (0, 4),               # Number of major vessels (0-4)
         'thal': (3, 7),             # Thalassemia types (3=normal, 6=fixed defect, 7=reversible defect)
-    }
-    
-    # Binary validation (0 or 1 only)
+    }    # Binary validation (0 or 1 only)
     binary_columns = ['sex', 'fbs', 'restecg', 'exang', 'htn', 
-                     'dm', 'famhist', 'smoke', 'prop', 'nitr', 'pro', 
+                     'dm', 'famhist', 'prop', 'nitr', 'pro', 
                      'diuretic', 'xhypo']
     
     # Multi-class validation
@@ -166,6 +199,7 @@ def validate_and_clean_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, i
         'cp': (0, 4),               # Chest pain types (0-4)
         'slope': (1, 3),            # Slope of peak exercise ST segment (1=upsloping, 2=flat, 3=downsloping)
         'num': (0, 4),              # Target variable (0-4, but often binarized)
+        'ca': (0, 3),               # Number of major vessels (0-3) colored by fluoroscopy
     }
     
     print("🔍 Validating data ranges for MI risk prediction...")
@@ -221,32 +255,7 @@ def validate_and_clean_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, i
     
     return df, stats
 
-def validate_smoke_cigarettes_logic(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Validate logical consistency for smoke variable"""
-    
-    stats = {"smoke_corrections": 0}
-    
-    if 'smoke' in df.columns:
-        print("🚬 Validating smoke variable...")
-        
-        # Ensure smoke is binary (0 or 1)
-        invalid_smoke_mask = ~df['smoke'].isin([0, 1])
-        invalid_count = invalid_smoke_mask.sum()
-        
-        if invalid_count > 0:
-            print(f"   ⚠️  Found {invalid_count} invalid smoke values")
-            
-            # Set invalid values to 0 (non-smoker as default)
-            df.loc[invalid_smoke_mask, 'smoke'] = 0
-            stats["smoke_corrections"] = invalid_count
-            
-            print(f"   🔧 Corrected: Set invalid smoke values to 0 ({invalid_count} corrections)")
-        else:
-            print("   ✅ No smoke value issues found")
-    else:
-        print("   ℹ️  Smoke column not found - skipping validation")
-    
-    return df, stats
+
 
 # Smart one-hot encoding function for categorical variables
 def create_onehot_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -256,10 +265,10 @@ def create_onehot_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
     
     print("🎯 Creating smart one-hot encoding for categorical variables...")
     df_onehot = df.copy()
-    columns_to_remove = []  # Track original columns that get one-hot encoded
-    
-    # Define categorical variables that might need one-hot encoding
-    # Exclude 'ca' as it's ordinal (number of vessels) and doesn't need one-hot
+    columns_to_remove = []  # Track original columns that get one-hot encoded      # Define categorical variables that might need one-hot encoding
+    # NOTE: 'ca' (number of major vessels 0-3) is NOT included here because:
+    # - It's ordinal: 0 < 1 < 2 < 3 vessels, so order matters
+    # - Can be used directly as numeric feature without one-hot encoding
     categorical_candidates = {
         'restecg': 'restecg',  # 0=normal, 1=st_t_abnormal, 2=lvh
         'slope': 'slope',      # 1=upsloping, 2=flat, 3=downsloping  
@@ -285,7 +294,7 @@ def create_onehot_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
                     df_onehot[var_name], 
                     prefix=prefix,
                     dtype=int,
-                    drop_first=True  # This will drop cp_0, restecg_0, etc.
+                    drop_first=False  # Avoid dummy variable trap by dropping first category
                 )
                 
                 # Add the one-hot columns to the main dataframe
@@ -313,15 +322,7 @@ def create_onehot_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
             if col in df_onehot.columns:
                 df_onehot = df_onehot.drop(columns=[col])
                 stats["original_features_removed"] += 1
-                print(f"     ✅ Removed original {col} column")
-    
-    # Special handling for 'ca' - keep as ordinal variable (no one-hot needed)
-    if 'ca' in df_onehot.columns:
-        ca_unique = df_onehot['ca'].nunique()
-        print(f"   🔍 Analyzing ca: {ca_unique} unique values (ordinal - no one-hot needed)")
-        print(f"     ⏭️  Skipping ca: ordinal variable (number of vessels)")
-        stats["binary_features_skipped"] += 1
-    
+                print(f"     ✅ Removed original {col} column")    
     print(f"\n   ✅ Smart one-hot encoding completed:")
     print(f"      • One-hot features created: {stats['onehot_features_created']}")
     print(f"      • Original categorical columns removed: {stats['original_features_removed']}")
@@ -400,11 +401,9 @@ def optimize_feature_distributions(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict
                 # Apply log transformation in-place
                 df_optimized[col] = np.log(df_optimized[col])
                 stats["skew_corrected"] += 1
-                print(f"   📈 {col}: applied log transformation in-place (skew: {skewness:.2f})")
-    
-    # Binary features validation (ensure proper encoding without new columns)
+                print(f"   📈 {col}: applied log transformation in-place (skew: {skewness:.2f})")      # Binary features validation (ensure proper encoding without new columns)
     binary_features = ['sex', 'fbs', 'restecg', 'exang', 'htn', 'dm', 'famhist', 
-                      'smoke', 'prop', 'nitr', 'pro', 'diuretic', 'xhypo']
+                      'prop', 'nitr', 'pro', 'diuretic', 'xhypo']
     
     for col in binary_features:
         if col in df_optimized.columns:
@@ -459,8 +458,7 @@ def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any
         "binary_encoded": 0,
         "skew_corrected": 0,
         "onehot_features_created": 0,
-        "original_features_removed": 0,        "binary_features_skipped": 0,
-        "smoke_corrections": 0
+        "original_features_removed": 0,        "binary_features_skipped": 0
     }
 
     # Step 1: Basic preprocessing
@@ -472,22 +470,18 @@ def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any
     df, imputation_stats = handle_missing_data(df)
     stats["rows_removed"] += imputation_stats["rows_removed"]
     stats["columns_dropped"] += imputation_stats.get("columns_dropped", 0)
-    stats["values_imputed"] += imputation_stats["values_imputed"]
-
-    # Step 3: Validate and clean data
+    stats["values_imputed"] += imputation_stats["values_imputed"]    # Step 3: Validate and clean data
     df, validation_stats = validate_and_clean_data(df)
-    stats["invalid_values_corrected"] += validation_stats["invalid_values_corrected"]    # Step 4: Validate smoke logical consistency
-    df, smoke_stats = validate_smoke_cigarettes_logic(df)
-    stats["smoke_corrections"] += smoke_stats["smoke_corrections"]
+    stats["invalid_values_corrected"] += validation_stats["invalid_values_corrected"]
 
-    # Step 5: Advanced feature optimization based on skewness analysis
+    # Step 4: Advanced feature optimization based on skewness analysis
     df, optimization_stats = optimize_feature_distributions(df)
     stats["features_transformed"] += optimization_stats["features_transformed"]
     stats["outliers_handled"] += optimization_stats["outliers_handled"]
     stats["binary_encoded"] += optimization_stats["binary_encoded"]  
     stats["skew_corrected"] += optimization_stats["skew_corrected"]
 
-    # Step 6: Create smart one-hot encoding for categorical variables (>2 categories only)
+    # Step 5: Create smart one-hot encoding for categorical variables (>2 categories only)
     df, onehot_stats = create_onehot_features(df)
     stats["onehot_features_created"] += onehot_stats["onehot_features_created"]
     stats["original_features_removed"] += onehot_stats["original_features_removed"]
@@ -514,16 +508,15 @@ def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any
     print(f"   📊 Skewness corrections: {stats['skew_corrected']}, Binary encodings: {stats['binary_encoded']}")
     print(f"   🎯 One-hot features created: {stats['onehot_features_created']} (Binary skipped: {stats['binary_features_skipped']})")
     print(f"   🗂️  Original categorical columns removed: {stats['original_features_removed']}")
-    print(f"   🚬 Smoke corrections: {stats['smoke_corrections']}")
     print(f"   📋 Final columns: {len(final_columns)} total ({len(original_columns)} remaining + {len(onehot_columns)} one-hot)")
     
     return df_final, stats
 
 def transform_raw_heart_disease_data(
-    input_file: str = 'app/data/raw/to_csv/heart_disease_raw.csv',
+    input_file: str = 'app/data/raw/to_csv/raw_heart_disease.csv',
     output_directory: str = 'app/data/processed'
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Transform only the heart_disease_raw.csv file from to_csv folder to processed folder"""
+    """Transform only the raw_heart_disease.csv file from to_csv folder to processed folder"""
     
     print("🏥 HEART DISEASE ETL - TRANSFORM RAW DATA TO PROCESSED")
     print("=" * 60)
@@ -536,7 +529,7 @@ def transform_raw_heart_disease_data(
     input_path = Path(input_file)
     if not input_path.exists():
         print(f"⚠️ Input file not found: {input_file}")
-        print("🔄 Attempting to create heart_disease_raw.csv...")
+        print("🔄 Attempting to create raw_heart_disease.csv...")
         
         # Import and use the ensure function
         from app.etl.extract.extract import ensure_raw_heart_disease_exists
