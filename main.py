@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from app.etl.extract.extract import extract_heart_disease_data, extract_data_to_csv
-from app.etl.transform.transform import transform_heart_disease_data
+from app.etl.transform.transform import transform_raw_heart_disease_data
 from app.etl.load.load_to_csv import load_to_csv, merge_processed_files
 
 def setup_logging(verbose=False):
@@ -56,21 +56,23 @@ def main():
     if (not args.extract_only and not args.transform_only and not args.merge_files and not args.all) or args.load_only:
         try:
             logging.info("Starting load process...")
+              # Get transformed data - use new single file approach
+            logging.info("Starting transformation process...")            # Transform the merged raw data - auto-create if missing
+            input_file = os.path.join(args.input_dir, 'heart_disease_raw.csv')
+            transformed_df, _ = transform_raw_heart_disease_data(input_file, args.output_dir)
             
-            # Get transformed data
-            logging.info("Starting transformation process...")
-            transformed_data, _ = transform_heart_disease_data(
-                input_directory=args.input_dir,
-                output_directory=args.output_dir
-            )
+            if not transformed_df.empty:
+                transformed_data = {'processed_heart_disease.csv': transformed_df}
+            else:
+                logging.error("Transformation failed - no data to save")
+                return 1
             
             # Load data to CSV files
             logging.info("\nLoading data to CSV files...")
             load_to_csv(transformed_data, args.output_dir)
-            
-            # Merge all processed files
+              # Merge all processed files (output as processed_heart_disease.csv)
             logging.info("\nMerging all processed files...")
-            merge_output = Path(args.output_dir) / "heart_disease_merged.csv"
+            merge_output = Path(args.output_dir) / "processed_heart_disease.csv"
             merge_stats = merge_processed_files(
                 processed_directory=args.output_dir,
                 output_file=str(merge_output)
@@ -99,11 +101,17 @@ def main():
     transformed_dataframes = {}
     if not args.extract_only and not args.load_only:
         try:
-            logging.info("Starting data transformation...")
-            transformed_dataframes, stats = transform_heart_disease_data(
-                input_directory=args.input_dir,
-                output_directory=args.output_dir
-            )
+            logging.info("Starting data transformation...")            # Transform the merged raw data - auto-create if missing
+            input_file = os.path.join(args.input_dir, 'heart_disease_raw.csv')
+            transformed_df, stats = transform_raw_heart_disease_data(input_file, args.output_dir)
+            
+            if not transformed_df.empty:
+                transformed_dataframes = {'processed_heart_disease.csv': transformed_df}
+            else:
+                logging.error("Transformation failed - no data to save")
+                if not args.transform_only:
+                    return 1
+                transformed_dataframes = {}
             
             # Save the transformed data using the load module
             if transformed_dataframes:
