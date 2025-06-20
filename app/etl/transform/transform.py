@@ -94,72 +94,85 @@ def handle_missing_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]
     if columns_to_drop:
         df_clean = df_clean.drop(columns=columns_to_drop)
         stats["columns_dropped"] = len(columns_to_drop)
-        print(f"   ✅ Removed {len(columns_to_drop)} columns with all missing values: {columns_to_drop}")      # Second pass: impute remaining missing values
+        print(f"   ✅ Removed {len(columns_to_drop)} columns with all missing values: {columns_to_drop}")      # Second pass: impute remaining missing values based on missing rate
+    rows_to_remove = []
+    
     for col in df_clean.columns:
         if df_clean[col].isnull().any():
             missing_count = df_clean[col].isnull().sum()
             missing_rate = missing_count / len(df_clean)
-              # Special handling for diabetes mellitus (dm) with high missing rate
-            if col == 'dm' and missing_rate > 0.8:
-                # Conservative medical approach: assume no diabetes if not documented
-                fill_val = 0  # No diabetes history
-                print(f"   🏥 {col}: {missing_count} values ({missing_rate*100:.1f}% missing)")
-                print(f"   🔬 Applied conservative medical assumption: no diabetes history (0)")
-                df_clean[col] = df_clean[col].fillna(fill_val)
-                stats["values_imputed"] += missing_count
+            
+            print(f"   🔍 {col}: {missing_count} values ({missing_rate*100:.1f}% missing)")
+            
+           
+            if missing_rate > 0.05:  # >5%
+                print(f"   ⚠️  {col}: High missing rate ({missing_rate*100:.1f}%) - marking rows for removal")
+                missing_rows = df_clean[df_clean[col].isnull()].index.tolist()
+                rows_to_remove.extend(missing_rows)
                 continue
             
-            # Special handling for ca (number of major vessels)
-            elif col == 'ca':
-                # For ca: use median but with medical consideration
-                # 0 vessels affected is the most common/healthy state
-                median_val = df_clean[col].median()
-                if pd.isna(median_val):
-                    fill_val = 0  # Default to 0 vessels (healthiest state)
-                    print(f"   🏥 {col}: filled {missing_count} values with clinical default (0 vessels)")
-                else:
-                    fill_val = median_val
-                    print(f"   🩺 {col}: filled {missing_count} values with median ({fill_val:.0f} vessels)")
-                df_clean[col] = df_clean[col].fillna(fill_val)
-                stats["values_imputed"] += missing_count
-                continue
-            
-            # Use median for numeric columns (PRIORITY 1)
-            if pd.api.types.is_numeric_dtype(df_clean[col]):
-                median_val = df_clean[col].median()
-                if pd.isna(median_val):
-                    # If median is NaN (all values missing), use reasonable defaults
-                    if col in ['age', 'trestbps', 'chol', 'thalach']:
-                        # Use clinical defaults for important continuous variables
-                        clinical_defaults = {
-                            'age': 55,         # Typical MI patient age
-                            'trestbps': 130,   # Normal-high BP
-                            'chol': 200,       # Borderline cholesterol
-                            'thalach': 150     # Age-adjusted max HR
-                        }
-                        fill_val = clinical_defaults.get(col, 0)
-                        print(f"   🏥 {col}: filled {missing_count} values with clinical default ({fill_val})")
-                    else:
-                        fill_val = 0
-                        print(f"   ⚠️  {col}: filled {missing_count} values with 0 (no valid data for median)")
-                else:
-                    fill_val = median_val
-                    print(f"   📊 {col}: filled {missing_count} values with median ({fill_val:.1f})")
-                df_clean[col] = df_clean[col].fillna(fill_val)
-                
-            # Use mode for categorical columns (PRIORITY 2) 
             else:
-                mode_val = df_clean[col].mode()
-                if len(mode_val) > 0:
-                    fill_val = mode_val.iloc[0]
-                    print(f"   📝 {col}: filled {missing_count} values with mode ({fill_val})")
+                if pd.api.types.is_numeric_dtype(df_clean[col]):
+                    median_val = df_clean[col].median()
+                    if pd.isna(median_val):
+                        # If median is NaN (all values missing), use reasonable defaults
+                        if col in ['age', 'trestbps', 'chol', 'thalach']:
+                            # Use clinical defaults for important continuous variables
+                            clinical_defaults = {
+                                'age': 55,         # Typical MI patient age
+                                'trestbps': 130,   # Normal-high BP
+                                'chol': 200,       # Borderline cholesterol
+                                'thalach': 150     # Age-adjusted max HR
+                            }
+                            fill_val = clinical_defaults.get(col, 0)
+                            print(f"   🏥 {col}: filled {missing_count} values with clinical default ({fill_val})")
+                        else:
+                            fill_val = 0
+                            print(f"   ⚠️  {col}: filled {missing_count} values with 0 (no valid data for median)")
+                    else:
+                        fill_val = median_val
+                        print(f"   📊 {col}: filled {missing_count} values with median ({fill_val:.1f})")
+                    df_clean[col] = df_clean[col].fillna(fill_val)
+                    
+                # Cột phân loại: nội suy bằng giá trị xuất hiện nhiều nhất (mode)
                 else:
-                    # If mode is empty (all values missing), use 'Unknown' as fallback
-                    fill_val = 'Unknown'
-                    print(f"   ⚠️  {col}: filled {missing_count} values with 'Unknown' (no valid data for mode)")
-                df_clean[col] = df_clean[col].fillna(fill_val)
-            
-            stats["values_imputed"] += missing_count    # Optimize data types
+                    mode_val = df_clean[col].mode()
+                    if len(mode_val) > 0:
+                        fill_val = mode_val.iloc[0]
+                        print(f"   📝 {col}: filled {missing_count} values with mode ({fill_val})")
+                    else:
+                        # If mode is empty (all values missing), use 'Unknown' as fallback
+                        fill_val = 'Unknown'
+                        print(f"   ⚠️  {col}: filled {missing_count} values with 'Unknown' (no valid data for mode)")
+                    df_clean[col] = df_clean[col].fillna(fill_val)
+                
+                stats["values_imputed"] += missing_count
+      # Remove rows with high missing rate data
+    if rows_to_remove:
+        rows_to_remove = list(set(rows_to_remove))  # Remove duplicates
+        rows_removed_count = len(rows_to_remove)
+        df_clean = df_clean.drop(index=rows_to_remove)
+        df_clean = df_clean.reset_index(drop=True)
+        stats["rows_removed"] += rows_removed_count
+        stats["rows_removed_high_missing"] = rows_removed_count  # Track high missing rate removals separately
+        print(f"   🗑️  Removed {rows_removed_count} rows with high missing rate data (>5%)")
+    else:
+        stats["rows_removed_high_missing"] = 0
+    
+    # Special handling for ca (number of major vessels) - always use median
+    if 'ca' in df_clean.columns and df_clean['ca'].isnull().any():
+        missing_count = df_clean['ca'].isnull().sum()
+        median_val = df_clean['ca'].median()
+        if pd.isna(median_val):
+            fill_val = 0  # Default to 0 vessels (healthiest state)
+            print(f"   🏥 ca: filled {missing_count} values with clinical default (0 vessels)")
+        else:
+            fill_val = median_val
+            print(f"   🩺 ca: filled {missing_count} values with median ({fill_val:.0f} vessels)")
+        df_clean['ca'] = df_clean['ca'].fillna(fill_val)
+        stats["values_imputed"] += missing_count
+
+    # Optimize data types
     type_conversions = {
         'sex': 'int8', 'cp': 'int8', 'fbs': 'int8', 'restecg': 'int8',
         'exang': 'int8', 'slope': 'int8', 'thal': 'int8', 'ca': 'int8',
@@ -442,13 +455,13 @@ def remove_duplicates(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
 def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Transform a single file - returns dataframe with smart one-hot encoded categorical variables"""    
     rows_before = len(df)
-    print(f"🚀 Transforming {rows_before} rows for MI risk prediction...")
-    
+    print(f"🚀 Transforming {rows_before} rows for MI risk prediction...")    
     stats = {
         "rows_before": rows_before,
         "rows_after": 0,
         "data_retention_rate": 0,
         "rows_removed": 0,
+        "rows_removed_high_missing": 0,  # New: track rows removed due to high missing rate
         "columns_dropped": 0,
         "duplicates_removed": 0,
         "values_imputed": 0,
@@ -458,19 +471,19 @@ def transform_single_file(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any
         "binary_encoded": 0,
         "skew_corrected": 0,
         "onehot_features_created": 0,
-        "original_features_removed": 0,        "binary_features_skipped": 0
+        "original_features_removed": 0,
+        "binary_features_skipped": 0
     }
 
     # Step 1: Basic preprocessing
     df = standardize_column_names(df)
     df = select_columns(df, SELECTED_COLUMNS)
-    print(f"   📋 Selected {len(df.columns)} MI risk-relevant columns")
-
-    # Step 2: Handle missing data
+    print(f"   📋 Selected {len(df.columns)} MI risk-relevant columns")    # Step 2: Handle missing data
     df, imputation_stats = handle_missing_data(df)
     stats["rows_removed"] += imputation_stats["rows_removed"]
+    stats["rows_removed_high_missing"] = imputation_stats.get("rows_removed_high_missing", 0)
     stats["columns_dropped"] += imputation_stats.get("columns_dropped", 0)
-    stats["values_imputed"] += imputation_stats["values_imputed"]    # Step 3: Validate and clean data
+    stats["values_imputed"] += imputation_stats["values_imputed"]# Step 3: Validate and clean data
     df, validation_stats = validate_and_clean_data(df)
     stats["invalid_values_corrected"] += validation_stats["invalid_values_corrected"]
 
@@ -569,13 +582,13 @@ def transform_raw_heart_disease_data(
         # Verify saved file
         verification_df = pd.read_csv(output_file)
         print(f"   🔍 Verification - saved file shape: {verification_df.shape}")
-        
-        # Enhanced summary
+          # Enhanced summary
         print(f"\n📈 TRANSFORMATION SUMMARY:")
         print(f"   • Input rows: {stats['rows_before']}")
         print(f"   • Output rows: {stats['rows_after']}")
         print(f"   • Data retention: {(stats['rows_after']/stats['rows_before']*100):.1f}%")
-        print(f"   • Values imputed: {stats['values_imputed']}")
+        print(f"   • Rows removed (high missing >5%): {stats.get('rows_removed_high_missing', 0)}")
+        print(f"   • Values imputed (low missing <5%): {stats['values_imputed']}")
         print(f"   • Duplicates removed: {stats['duplicates_removed']}")
         print(f"   • Features transformed: {stats['features_transformed']}")
         print(f"   • Outliers handled: {stats['outliers_handled']}")
@@ -591,7 +604,5 @@ def transform_raw_heart_disease_data(
         
     except Exception as e:
         error_msg = f"Error processing {input_file}: {e}"
-        print(f"❌ {error_msg}")
+        print(f"❌ {error_msg}") 
         return pd.DataFrame(), {"error": error_msg}
-
-
