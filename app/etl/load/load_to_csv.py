@@ -103,28 +103,3 @@ def load_existing_processed_data(file_path: str = 'app/data/processed/processed_
         print(f"❌ Error loading data: {e}")
         return pd.DataFrame()
 
-# if __name__ == "__main__":
-#     # Run the complete ETL pipeline
-#     print("🏥 HEART DISEASE ETL - LOAD TO CSV")
-#     print("=" * 40)
-    
-#     # Run complete pipeline (transform + save)
-#     output_file = load_processed_heart_disease_data()
-    
-#     if output_file:
-#         print(f"\n🎉 Success! Processed data saved to: {output_file}")
-        
-#         # Load and display sample of processed data
-#         print(f"\n📊 Loading processed data for verification...")
-#         df = load_existing_processed_data()
-        
-#         if not df.empty:
-#             print(f"\n📋 DATA OVERVIEW:")
-#             print(f"   • Shape: {df.shape}")
-#             print(f"   • Columns: {list(df.columns)}")
-#             if 'num' in df.columns:
-#                 print(f"   • Target distribution: {df['num'].value_counts().to_dict()}")
-#             print(f"\n📝 First 5 rows:")
-#             print(df.head())
-#     else:
-#         print("❌ ETL Pipeline failed")

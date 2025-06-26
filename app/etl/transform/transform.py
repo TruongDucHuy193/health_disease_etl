@@ -383,10 +383,14 @@ def optimize_feature_distributions(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict
             skewness = df_optimized[col].skew()
             
             if col == 'oldpeak' and abs(skewness) > 1.0:
+                # Apply absolute value to ensure oldpeak is non-negative
+                df_optimized[col] = df_optimized[col].abs()
+                print(f"   🔧 {col}: applied absolute value to ensure non-negative values")
+                
                 # Log transformation in-place for oldpeak
                 min_val = df_optimized[col].min()
                 if min_val <= 0:
-                    df_optimized[col] = df_optimized[col] + abs(min_val) + 0.1
+                    df_optimized[col] = df_optimized[col] + 0.1
                 
                 # Apply log transformation in-place
                 df_optimized[col] = np.log(df_optimized[col])
